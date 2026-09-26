@@ -5,8 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class AppSettings(BaseSettings):
     api_key: SecretStr = Field(..., alias="API_KEY")
-    api_url: HttpUrl = Field(default="https://api.deepseek.com", alias="API_URL")
-    model_name: str = Field(default="deepseek-chat", alias="MODEL_NAME")
+    api_url: HttpUrl = Field(default="https://api.siliconflow.cn/v1", alias="API_URL")
+    model_name: str = Field(default="deepseek-ai/DeepSeek-V4-Flash", alias="MODEL_NAME")
     max_turns: int = Field(default=5, ge=1, le=20, alias="MAX_TURNS")
     is_debug: bool = Field(default=False, alias="DEBUG")
 
