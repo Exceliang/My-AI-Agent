@@ -5,7 +5,7 @@ import sqlglot
 from sqlglot import exp
 
 DB_PATH = "market_data.duckdb"
-ALLOWED_TABLES = {"semiconductor_market"}
+ALLOWED_TABLES = {"market"}
 MAX_LIMIT = 30
 
 
@@ -14,8 +14,6 @@ def get_db_schema(**kwargs) -> str:
     提供数据库的真实物理字段与金融指标的 SQL 推导规范
     """
     schema_doc = """
-【物理表名】: semiconductor_market (全球半导体核心财务与预测数据库)
-
 【不可变的物理列清单】:
 - ticker (VARCHAR): 股票代码 (如 NVDA, A005930, 7735)
 - company_name (VARCHAR): 公司英文全称
@@ -76,7 +74,7 @@ def get_db_schema(**kwargs) -> str:
 
 def validate_and_sanitize_sql(sql_str: str) -> str:
     """
-    AST 抽象语法树安全门：严格断言只读 SELECT，校验白名单表名，注入 LIMIT 截断
+    通过 sqlglot AST 语法树编译器进行安全断言与动态重写 (修复类型注水 Bug)
     """
     try:
         parsed_statements = sqlglot.parse(sql_str, read="duckdb")
@@ -88,7 +86,7 @@ def validate_and_sanitize_sql(sql_str: str) -> str:
 
     ast = parsed_statements[0]
 
-    # 1. 严格只读判定
+    # 1. 严格断言只读类型
     if not isinstance(ast, exp.Select):
         raise ValueError("安全拦截: 非法操作类型，仅允许执行 SELECT 查询。")
 
@@ -98,7 +96,7 @@ def validate_and_sanitize_sql(sql_str: str) -> str:
         if table_name not in ALLOWED_TABLES:
             raise ValueError(f"安全拦截: 目标表 `{table_name}` 未在白名单中，仅允许访问: {ALLOWED_TABLES}")
 
-    # 3. 注入或覆写 LIMIT 避免打爆内存
+    # 3. 安全替换 LIMIT：使用标准的 Literal.number 节点，避免类型错误
     limit_node = ast.find(exp.Limit)
     if limit_node is None:
         ast = ast.limit(MAX_LIMIT)
@@ -106,8 +104,9 @@ def validate_and_sanitize_sql(sql_str: str) -> str:
         try:
             curr_limit = int(limit_node.expression.this)
             if curr_limit > MAX_LIMIT:
-                limit_node.expression.set("this", MAX_LIMIT)
-        except (ValueError, AttributeError):
+                # 修复核心：必须用 exp.Literal.number 包装字符串
+                limit_node.set("expression", exp.Literal.number(str(MAX_LIMIT)))
+        except Exception:
             ast = ast.limit(MAX_LIMIT)
 
     return ast.sql(dialect="duckdb")
@@ -117,7 +116,11 @@ def execute_sql(sql_query: str, **kwargs) -> str:
     """
     在 DuckDB 中执行 SQL 并将数据以 Markdown 格式返回
     """
-    print(f"\n  >>> [AST 审计审查] 收到输入 SQL:\n      {sql_query.strip()}")
+    sql_query = sql_query.strip().strip("'\"\\").strip()
+    if sql_query.endswith(";"):
+        sql_query = sql_query[:-1].strip()
+    
+    print(f"\n  >>> [AST 审计审查] 收到输入 SQL:\n      {sql_query}")
     
     try:
         safe_sql = validate_and_sanitize_sql(sql_query)

@@ -9,7 +9,7 @@ class AgentEngine:
     def __init__(self, max_turns: int | None = None):
         self.settings = get_settings()
         self.client = get_llm_client()
-        self.max_turns = max_turns or self.settings.max_turns
+        self.max_turns = self.settings.max_turns
 
     def run(self, query: str) -> str:
         messages: List[Dict[str, Any]] = [
@@ -71,5 +71,11 @@ class AgentEngine:
                     "tool_call_id": call_id,
                     "content": tool_output
                 })
+
+            tool_output = target_func(**args_dict)
+            if "SQL_ERROR" in str(tool_output) or "error" in str(tool_output):
+                print(f"  [工具报错反馈给模型]: {tool_output}")
+            else:
+                print(f"  [工具执行成功] 数据行已抓取，准备进入下一轮思考。")
 
         return "【系统熔断】超过最大 ReAct 决策轮次，执行已强制中止。"

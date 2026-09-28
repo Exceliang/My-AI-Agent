@@ -25,7 +25,7 @@ def init_database(json_filename: str = "koyfin.json", db_path: str = "market_dat
                 extract_equities(child)
 
     extract_equities(raw_data)
-    print(f"  ✓ 成功定位到 {len(equity_items)} 家半导体/硬件公司记录")
+    print(f"  ✓ 成功定位到 {len(equity_items)} 家公司记录")
 
     if not equity_items:
         raise ValueError("未在 JSON 中找到股票实体节点，请确认输入数据。")
@@ -125,8 +125,8 @@ def init_database(json_filename: str = "koyfin.json", db_path: str = "market_dat
 
     print("\n[3/4] 正在将真实结构写入 DuckDB 数据库...")
     conn = duckdb.connect(db_path)
-    conn.execute("CREATE OR REPLACE TABLE semiconductor_market AS SELECT * FROM df")
-    total_count = conn.execute("SELECT count(*) FROM semiconductor_market").fetchone()[0]
+    conn.execute("CREATE OR REPLACE TABLE market AS SELECT * FROM df")
+    total_count = conn.execute("SELECT count(*) FROM market").fetchone()[0]
     print(f"  ✓ 数据库写入成功！总行数: {total_count}")
 
     print("\n[4/4] 真实数据多因子验证查询（通过原生字段在 SQL 里直接计算 FCF 与增速）：")
@@ -139,7 +139,7 @@ def init_database(json_filename: str = "koyfin.json", db_path: str = "market_dat
         round(cf_ops_ltm_musd + capex_ltm_musd, 1) AS fcf_musd,
         round(((est_ebitda_ntm_musd - ebitda_ltm_musd) / ebitda_ltm_musd) * 100, 1) || '%' AS ntm_growth,
         round((total_debt_musd / total_equity_musd) * 100, 1) || '%' AS d_e_ratio
-    FROM semiconductor_market
+    FROM market
     WHERE cf_ops_ltm_musd IS NOT NULL 
       AND capex_ltm_musd IS NOT NULL
       AND est_ebitda_ntm_musd IS NOT NULL
