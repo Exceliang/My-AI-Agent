@@ -6,8 +6,8 @@ def main():
 
     # 真实的买方半导体投研复合指令
     user_prompt = (
-        "请帮我从 market_data.duckdb 数据库中筛选出同时满足以下条件的优质标的：\n"
-        "1. 行业为Semiconductors and Semiconductor Equipments；\n"
+        "请帮我从 market_data 数据库中筛选出同时满足以下条件的优质标的：\n"
+        "1. 行业为Semiconductors and Semiconductor Equipment；\n"
         "2. 前瞻估值不能太高；\n"
         "3. 尽量选一个EBITDA增速和roic双高的；\n"
         "输出符合条件标的的股票代码、公司名称、国家、前瞻 EBITDA 增速、真实 FCF 利润率、负债率，"
