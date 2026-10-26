@@ -1,4 +1,5 @@
 import json
+from typing import Any
 import duckdb
 import pandas as pd
 import sqlglot
@@ -9,7 +10,7 @@ ALLOWED_TABLES = {"market"}
 MAX_LIMIT = 30
 
 
-def get_db_schema(**kwargs) -> str:
+def get_db_schema(**kwargs: Any) -> str:
     """
     提供数据库的真实物理字段与金融指标的 SQL 推导规范
     """
@@ -49,7 +50,7 @@ def get_db_schema(**kwargs) -> str:
 - est_ebitda_ntm_musd (DOUBLE): 华尔街一致预期未来12个月 EBITDA (NTM)
 
 【金融派生指标 SQL 编写算式规范】:
-* 本表不存预计算字段，派生指标必须在 SQL 中使用物理列自行推导：
+- 本表不存预计算字段，派生指标必须在 SQL 中使用物理列自行推导：
 1. 真实自由现金流 (FCF):
    `round(cf_ops_ltm_musd + capex_ltm_musd, 2)`
 2. 剔除 SBC 的真实自由现金流:
@@ -74,37 +75,48 @@ def get_db_schema(**kwargs) -> str:
 
 def validate_and_sanitize_sql(sql_str: str) -> str:
     """
-    通过 sqlglot AST 语法树编译器进行安全断言与动态重写 (修复类型注水 Bug)
+    通过 sqlglot AST 语法树编译器进行安全断言与动态重写：
+    1. 支持 SELECT 与 UNION 复合查询（含 WITH CTE 语法支持）
+    2. 搜集并放行 CTE 别名，消除物理表名误杀
+    3. 校验物理表名白名单
+    4. 动态重写或注入 LIMIT 节点
     """
     try:
         parsed_statements = sqlglot.parse(sql_str, read="duckdb")
     except Exception as parse_err:
-        raise ValueError(f"SQL 语法解析异常: {str(parse_err)}")
+        raise ValueError(f"SQL 语法解析异常 (DuckDB 方言): {str(parse_err)}")
 
     if len(parsed_statements) != 1 or parsed_statements[0] is None:
         raise ValueError("安全拦截: 仅允许执行单条 SQL 语句，严禁堆叠查询。")
 
     ast = parsed_statements[0]
 
-    # 1. 严格断言只读类型
-    if not isinstance(ast, exp.Select):
-        raise ValueError("安全拦截: 非法操作类型，仅允许执行 SELECT 查询。")
+    # 1. 放宽只读校验：同时支持 SELECT 以及 UNION 组合查询
+    if not isinstance(ast, (exp.Select, exp.Union)):
+        raise ValueError(
+            f"安全拦截: 非法操作类型 [{ast.key.upper()}]，仅允许执行 SELECT 或 UNION 查询。"
+        )
 
-    # 2. 表名白名单判定
+    # 2. 提取所有 CTE 别名并放入临时白名单，防止嵌套查询误杀
+    cte_aliases = {cte.alias_or_name.lower() for cte in ast.ctes}
+
+    # 3. 物理表名白名单断言（自动跳过 CTE 别名）
     for table in ast.find_all(exp.Table):
         table_name = table.name.lower()
-        if table_name not in ALLOWED_TABLES:
-            raise ValueError(f"安全拦截: 目标表 `{table_name}` 未在白名单中，仅允许访问: {ALLOWED_TABLES}")
+        if table_name not in cte_aliases and table_name not in ALLOWED_TABLES:
+            raise ValueError(
+                f"安全拦截: 目标表 `{table_name}` 未在白名单中，仅允许访问物理表: {ALLOWED_TABLES}"
+            )
 
-    # 3. 安全替换 LIMIT：使用标准的 Literal.number 节点，避免类型错误
+    # 4. 动态重写/限制 LIMIT：防止大结果集撑爆 Context Window
     limit_node = ast.find(exp.Limit)
     if limit_node is None:
         ast = ast.limit(MAX_LIMIT)
     else:
         try:
-            curr_limit = int(limit_node.expression.this)
+            limit_expr = limit_node.expression
+            curr_limit = int(limit_expr.this if hasattr(limit_expr, "this") else limit_expr)
             if curr_limit > MAX_LIMIT:
-                # 修复核心：必须用 exp.Literal.number 包装字符串
                 limit_node.set("expression", exp.Literal.number(str(MAX_LIMIT)))
         except Exception:
             ast = ast.limit(MAX_LIMIT)
@@ -112,19 +124,19 @@ def validate_and_sanitize_sql(sql_str: str) -> str:
     return ast.sql(dialect="duckdb")
 
 
-def execute_sql(sql_query: str, **kwargs) -> str:
+def execute_sql(sql_query: str, **kwargs: Any) -> str:
     """
-    在 DuckDB 中执行 SQL 并将数据以 Markdown 格式返回
+    在 DuckDB 中执行只读 SQL 并将结果集序列化为 Markdown 表格
     """
     sql_query = sql_query.strip().strip("'\"\\").strip()
     if sql_query.endswith(";"):
         sql_query = sql_query[:-1].strip()
-    
-    print(f"\n  >>> [AST 审计审查] 收到输入 SQL:\n      {sql_query}")
-    
+
+    print(f"\n   >>> [AST 审计审查] 收到输入 SQL:\n      {sql_query}")
+
     try:
         safe_sql = validate_and_sanitize_sql(sql_query)
-        print(f"  >>> [AST 编译通过] 下推安全 SQL:\n      {safe_sql}\n")
+        print(f"   >>> [AST 编译通过] 下推安全 SQL:\n      {safe_sql}\n")
 
         conn = duckdb.connect(DB_PATH, read_only=True)
         df: pd.DataFrame = conn.execute(safe_sql).df()
@@ -133,12 +145,16 @@ def execute_sql(sql_query: str, **kwargs) -> str:
         if df.empty:
             return json.dumps({"message": "查询执行成功，但返回数据为空（无匹配记录）。"}, ensure_ascii=False)
 
-        return df.to_markdown(index=False)
+        try:
+            return df.to_markdown(index=False)
+        except ImportError:
+            # 缺失 tabulate 依赖时平稳降级为文本表格，避免抛出异常阻断 Agent 决策
+            return df.to_string(index=False)
 
     except Exception as e:
-        # 将结构化错误信息返回给 Agent，驱动 ReAct 自愈重写
+        # 结构化回传错误信息与指引，驱动 Agent 进行 ReAct 自愈纠错
         return json.dumps({
             "status": "SQL_ERROR",
             "message": str(e),
-            "hint": "请根据 get_db_schema 中的物理列名检查字段拼写，派生指标请使用原生加减乘除计算。"
+            "hint": "请核对 get_db_schema 中的物理列名，派生指标请使用基础物理列与除零保护公式推导。"
         }, ensure_ascii=False)
